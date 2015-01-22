@@ -4,7 +4,7 @@
     "type": "git",
     "url": "https://github.com/eface2face/meteor-core"
   },
-  "version": "1.0.5", 
+ "version": "1.1.0",
   "main": "meteor.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -12,6 +12,5 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "lodash": "^2.4.1"
   }
 }

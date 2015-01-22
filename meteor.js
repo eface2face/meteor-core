@@ -1,5 +1,7 @@
-var _ = require("lodash");
-var Meteor;
+module.exports = function(underscore) {
+  var Meteor;
+  var _ = underscore; 
+
 /**
  * @summary The Meteor namespace
  * @namespace Meteor
@@ -670,4 +672,6 @@ Meteor._setImmediate =
   useSetImmediate() ||
   usePostMessage() ||
   useTimeout();
-module.exports = Meteor;
+  Meteor.underscore = _;
+  return Meteor;
+};
