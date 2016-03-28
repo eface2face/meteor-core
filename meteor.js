@@ -1,12 +1,37 @@
 module.exports = function(underscore) {
   var Meteor;
+  var meteorEnv;
   var _ = underscore; 
+  var Package = {};
+
+  var __meteor_runtime_config__ = {
+	meteorEnv : {
+			NODE_ENV : process.env.NODE_ENV || 'production'
+		}
+  };
+
+meteorEnv = __meteor_runtime_config__.meteorEnv;
 
 /**
  * @summary The Meteor namespace
  * @namespace Meteor
  */
 Meteor = {
+  /**
+   * @summary Boolean variable.  True if running in production environment.
+   * @locus Anywhere
+   * @static
+   * @type {Boolean}
+   */
+  isProduction: meteorEnv.NODE_ENV === "production",
+
+  /**
+   * @summary Boolean variable.  True if running in development environment.
+   * @locus Anywhere
+   * @static
+   * @type {Boolean}
+   */
+  isDevelopment: meteorEnv.NODE_ENV !== "production",
 
   /**
    * @summary Boolean variable.  True if running in client environment.
@@ -29,12 +54,100 @@ Meteor = {
 if (typeof __meteor_runtime_config__ === 'object' &&
     __meteor_runtime_config__.PUBLIC_SETTINGS) {
   /**
-   * @summary `Meteor.settings` contains deployment-specific configuration options. You can initialize settings by passing the `--settings` option (which takes the name of a file containing JSON data) to `meteor run` or `meteor deploy`. When running your server directly (e.g. from a bundle), you instead specify settings by putting the JSON directly into the `METEOR_SETTINGS` environment variable. If you don't provide any settings, `Meteor.settings` will be an empty object.  If the settings object contains a key named `public`, then `Meteor.settings.public` will be available on the client as well as the server.  All other properties of `Meteor.settings` are only defined on the server.
+   * @summary `Meteor.settings` contains deployment-specific configuration options. You can initialize settings by passing the `--settings` option (which takes the name of a file containing JSON data) to `meteor run` or `meteor deploy`. When running your server directly (e.g. from a bundle), you instead specify settings by putting the JSON directly into the `METEOR_SETTINGS` environment variable. If the settings object contains a key named `public`, then `Meteor.settings.public` will be available on the client as well as the server.  All other properties of `Meteor.settings` are only defined on the server.  You can rely on `Meteor.settings` and `Meteor.settings.public` being defined objects (not undefined) on both client and server even if there are no settings specified.  Changes to `Meteor.settings.public` at runtime will be picked up by new client connections.
    * @locus Anywhere
    * @type {Object}
    */
   Meteor.settings = { 'public': __meteor_runtime_config__.PUBLIC_SETTINGS };
 }
+var callbackQueue = [];
+var isLoadingCompleted = false;
+var isReady = false;
+
+// Keeps track of how many events to wait for in addition to loading completing,
+// before we're considered ready.
+var readyHoldsCount = 0;
+
+var holdReady =  function () {
+  readyHoldsCount++;
+}
+
+var releaseReadyHold = function () {
+  readyHoldsCount--;
+  maybeReady();
+}
+
+var maybeReady = function () {
+  if (isReady || !isLoadingCompleted || readyHoldsCount > 0)
+    return;
+
+  isReady = true;
+
+  // Run startup callbacks
+  while (callbackQueue.length)
+    (callbackQueue.shift())();
+
+  if (Meteor.isCordova) {
+    // Notify the WebAppLocalServer plugin that startup was completed successfully,
+    // so we can roll back faulty versions if this doesn't happen
+    WebAppLocalServer.startupDidComplete();
+  }
+};
+
+var loadingCompleted = function () {
+  if (!isLoadingCompleted) {
+    isLoadingCompleted = true;
+    maybeReady();
+  }
+}
+
+if (Meteor.isCordova) {
+  holdReady();
+  document.addEventListener('deviceready', releaseReadyHold, false);
+}
+
+if (document.readyState === 'complete' || document.readyState === 'loaded') {
+  // Loading has completed,
+  // but allow other scripts the opportunity to hold ready
+  window.setTimeout(loadingCompleted);
+} else { // Attach event listeners to wait for loading to complete
+  if (document.addEventListener) {
+    document.addEventListener('DOMContentLoaded', loadingCompleted, false);
+    window.addEventListener('load', loadingCompleted, false);
+  } else { // Use IE event model for < IE9
+    document.attachEvent('onreadystatechange', function () {
+      if (document.readyState === "complete") {
+        loadingCompleted();
+      }
+    });
+    window.attachEvent('load', loadingCompleted);
+  }
+}
+
+/**
+ * @summary Run code when a client or a server starts.
+ * @locus Anywhere
+ * @param {Function} func A function to run on startup.
+ */
+Meteor.startup = function (callback) {
+  // Fix for < IE9, see http://javascript.nwbox.com/IEContentLoaded/
+  var doScroll = !document.addEventListener &&
+    document.documentElement.doScroll;
+
+  if (!doScroll || window !== top) {
+    if (isReady)
+      callback();
+    else
+      callbackQueue.push(callback);
+  } else {
+    try { doScroll('left'); }
+    catch (error) {
+      setTimeout(function () { Meteor.startup(callback); }, 50);
+      return;
+    };
+    callback();
+  }
+};
 var suppress = 0;
 
 // replacement for console.log. This is a temporary API. We should
@@ -98,7 +211,7 @@ Meteor._suppress_log = function (count) {
   suppress += count;
 };
 
-Meteor._supressed_log_expected = function () {
+Meteor._suppressed_log_expected = function () {
   return suppress !== 0;
 };
 
@@ -186,7 +299,7 @@ _.extend(Meteor, {
 
   /**
    * @memberOf Meteor
-   * @summary Wrap a function that takes a callback function as its final parameter. On the server, the wrapped function can be used either synchronously (without passing a callback) or asynchronously (when a callback is passed). On the client, a callback is always required; errors will be logged if there is no callback. If a callback is provided, the environment captured when the original function was called will be restored in the callback.
+   * @summary Wrap a function that takes a callback function as its final parameter. The signature of the callback of the wrapped function should be `function(error, result){}`. On the server, the wrapped function can be used either synchronously (without passing a callback) or asynchronously (when a callback is passed). On the client, a callback is always required; errors will be logged if there is no callback. If a callback is provided, the environment captured when the original function was called will be restored in the callback.
    * @locus Anywhere
    * @param {Function} func A function that takes a callback as its final parameter
    * @param {Object} [context] Optional `this` object against which the original function will be invoked
@@ -318,7 +431,7 @@ _.extend(Meteor._SynchronousQueue.prototype, {
             // for.
             throw e;
           } else {
-            Meteor._debug("Exception in queued task: " + e.stack);
+            Meteor._debug("Exception in queued task: " + (e.stack || e));
           }
         }
       }
@@ -427,26 +540,19 @@ Meteor._nodeCodeMustBeInFiber = function () {
 //
 Meteor.makeErrorType = function (name, constructor) {
   var errorClass = function (/*arguments*/) {
-    var self = this;
-
     // Ensure we get a proper stack trace in most Javascript environments
     if (Error.captureStackTrace) {
       // V8 environments (Chrome and Node.js)
-      Error.captureStackTrace(self, errorClass);
+      Error.captureStackTrace(this, errorClass);
     } else {
-      // Firefox
-      var e = new Error;
-      e.__proto__ = errorClass.prototype;
-      if (e instanceof errorClass)
-        self = e;
+      // Borrow the .stack property of a native Error object.
+      this.stack = new Error().stack;
     }
     // Safari magically works.
 
-    constructor.apply(self, arguments);
+    constructor.apply(this, arguments);
 
-    self.errorType = name;
-
-    return self;
+    this.errorType = name;
   };
 
   Meteor._inherits(errorClass, Error);
@@ -483,7 +589,7 @@ Meteor.makeErrorType = function (name, constructor) {
  * // on the client
  * Meteor.call("methodName", function (error) {
  *   // identify the error
- *   if (error.error === "logged-out") {
+ *   if (error && error.error === "logged-out") {
  *     // show a nice error message
  *     Session.set("errorMessage", "Please log in to post a comment.");
  *   }
@@ -503,8 +609,7 @@ Meteor.Error = Meteor.makeErrorType(
   function (error, reason, details) {
     var self = this;
 
-    // Currently, a numeric code, likely similar to a HTTP code (eg,
-    // 404, 500). That is likely to change though.
+    // String code uniquely identifying this kind of error.
     self.error = error;
 
     // Optional: A short human-readable summary of the error. Not
@@ -678,6 +783,135 @@ Meteor._setImmediate =
   useSetImmediate() ||
   usePostMessage() ||
   useTimeout();
+var withoutInvocation = function (f) {
+  if (Package.ddp) {
+    var _CurrentInvocation = Package.ddp.DDP._CurrentInvocation;
+    if (_CurrentInvocation.get() && _CurrentInvocation.get().isSimulation)
+      throw new Error("Can't set timers inside simulations");
+    return function () { _CurrentInvocation.withValue(null, f); };
+  }
+  else
+    return f;
+};
+
+var bindAndCatch = function (context, f) {
+  return Meteor.bindEnvironment(withoutInvocation(f), context);
+};
+
+_.extend(Meteor, {
+  // Meteor.setTimeout and Meteor.setInterval callbacks scheduled
+  // inside a server method are not part of the method invocation and
+  // should clear out the CurrentInvocation environment variable.
+
+  /**
+   * @memberOf Meteor
+   * @summary Call a function in the future after waiting for a specified delay.
+   * @locus Anywhere
+   * @param {Function} func The function to run
+   * @param {Number} delay Number of milliseconds to wait before calling function
+   */
+  setTimeout: function (f, duration) {
+    return setTimeout(bindAndCatch("setTimeout callback", f), duration);
+  },
+
+  /**
+   * @memberOf Meteor
+   * @summary Call a function repeatedly, with a time delay between calls.
+   * @locus Anywhere
+   * @param {Function} func The function to run
+   * @param {Number} delay Number of milliseconds to wait between each function call.
+   */
+  setInterval: function (f, duration) {
+    return setInterval(bindAndCatch("setInterval callback", f), duration);
+  },
+
+  /**
+   * @memberOf Meteor
+   * @summary Cancel a repeating function call scheduled by `Meteor.setInterval`.
+   * @locus Anywhere
+   * @param {Number} id The handle returned by `Meteor.setInterval`
+   */
+  clearInterval: function(x) {
+    return clearInterval(x);
+  },
+
+  /**
+   * @memberOf Meteor
+   * @summary Cancel a function call scheduled by `Meteor.setTimeout`.
+   * @locus Anywhere
+   * @param {Number} id The handle returned by `Meteor.setTimeout`
+   */
+  clearTimeout: function(x) {
+    return clearTimeout(x);
+  },
+
+  // XXX consider making this guarantee ordering of defer'd callbacks, like
+  // Tracker.afterFlush or Node's nextTick (in practice). Then tests can do:
+  //    callSomethingThatDefersSomeWork();
+  //    Meteor.defer(expect(somethingThatValidatesThatTheWorkHappened));
+  defer: function (f) {
+    Meteor._setImmediate(bindAndCatch("defer callback", f));
+  }
+});
+/**
+ * @summary Generate an absolute URL pointing to the application. The server reads from the `ROOT_URL` environment variable to determine where it is running. This is taken care of automatically for apps deployed to Galaxy, but must be provided when using `meteor build`.
+ * @locus Anywhere
+ * @param {String} [path] A path to append to the root URL. Do not include a leading "`/`".
+ * @param {Object} [options]
+ * @param {Boolean} options.secure Create an HTTPS URL.
+ * @param {Boolean} options.replaceLocalhost Replace localhost with 127.0.0.1. Useful for services that don't recognize localhost as a domain name.
+ * @param {String} options.rootUrl Override the default ROOT_URL from the server environment. For example: "`http://foo.example.com`"
+ */
+Meteor.absoluteUrl = function (path, options) {
+  // path is optional
+  if (!options && typeof path === 'object') {
+    options = path;
+    path = undefined;
+  }
+  // merge options with defaults
+  options = _.extend({}, Meteor.absoluteUrl.defaultOptions, options || {});
+
+  var url = options.rootUrl;
+  if (!url)
+    throw new Error("Must pass options.rootUrl or set ROOT_URL in the server environment");
+
+  if (!/^http[s]?:\/\//i.test(url)) // url starts with 'http://' or 'https://'
+    url = 'http://' + url; // we will later fix to https if options.secure is set
+
+  if (!/\/$/.test(url)) // url ends with '/'
+    url += '/';
+
+  if (path)
+    url += path;
+
+  // turn http to https if secure option is set, and we're not talking
+  // to localhost.
+  if (options.secure &&
+      /^http:/.test(url) && // url starts with 'http:'
+      !/http:\/\/localhost[:\/]/.test(url) && // doesn't match localhost
+      !/http:\/\/127\.0\.0\.1[:\/]/.test(url)) // or 127.0.0.1
+    url = url.replace(/^http:/, 'https:');
+
+  if (options.replaceLocalhost)
+    url = url.replace(/^http:\/\/localhost([:\/].*)/, 'http://127.0.0.1$1');
+
+  return url;
+};
+
+// allow later packages to override default options
+Meteor.absoluteUrl.defaultOptions = { };
+if (typeof __meteor_runtime_config__ === "object" &&
+    __meteor_runtime_config__.ROOT_URL)
+  Meteor.absoluteUrl.defaultOptions.rootUrl = __meteor_runtime_config__.ROOT_URL;
+
+
+Meteor._relativeToSiteRootUrl = function (link) {
+  if (typeof __meteor_runtime_config__ === "object" &&
+      link.substr(0, 1) === "/")
+    link = (__meteor_runtime_config__.ROOT_URL_PATH_PREFIX || "") + link;
+  return link;
+};
   Meteor.underscore = _;
+  Meteor.__meteor_runtime_config__ = __meteor_runtime_config__;
   return Meteor;
 };
